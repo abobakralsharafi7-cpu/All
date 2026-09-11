@@ -1,0 +1,775 @@
+                    buy_signal := true
+                    entered_setup_extreme := f.setup_extreme
+                    entered_zone_top := f.top
+                    entered_zone_bottom := f.bottom
+                    active_trade_tf := f.tf
+                    active_trade_src := "FVG"
+                    active_trade_touch_no := f.touch_no
+                    active_trade_liq := bos_liq_buy
+                    active_trade_crt_revive := f.has_crt_revive
+                    f.is_used := true
+                    f.waiting_buy := false
+                    f.requires_reset := true
+                    // استهلاك تصريح الشراء بعد فتح الصفقة
+                    buy_liq_permit := false
+                    // ملكية كاملة: كل المناطق المنتظرة التي شاركت في التفعيل تُستهلك نهائياً مع هذه الصفقة
+                    string zones_txt = get_tf_name(f.tf)
+                    for j = 0 to array.size(active_fvgs) - 1
+                        if j != i
+                            FVG_Zone f2 = array.get(active_fvgs, j)
+                            if f2.is_active and not f2.requires_reset and f2.waiting_buy
+                                f2.is_used := true
+                                f2.waiting_buy := false
+                                f2.requires_reset := true
+                                zones_txt += " + " + get_tf_name(f2.tf)
+                    // تصفير التأكيد المكسور لكل المناطق الأخرى المنتظرة: لا صفقة مستقبلاً بدون ملامسة/فحص CISD جديد
+                    if array.size(active_fvgs) > 0
+                        for j = 0 to array.size(active_fvgs) - 1
+                            if j != i
+                                FVG_Zone f3 = array.get(active_fvgs, j)
+                                if f3.is_active and not f3.requires_reset and (f3.waiting_buy or f3.waiting_sell) and f3.cisd_broken
+                                    f3.cisd_broken := false
+                    active_trade_zones := zones_txt
+                    break
+                else if f.waiting_sell and is_cisd_ok
+                    sell_signal := true
+                    entered_setup_extreme := f.setup_extreme
+                    entered_zone_top := f.top
+                    entered_zone_bottom := f.bottom
+                    active_trade_tf := f.tf
+                    active_trade_src := "FVG"
+                    active_trade_touch_no := f.touch_no
+                    active_trade_liq := bos_liq_sell
+                    active_trade_crt_revive := f.has_crt_revive
+                    f.is_used := true
+                    f.waiting_sell := false
+                    f.requires_reset := true
+                    // استهلاك تصريح البيع بعد فتح الصفقة
+                    sell_liq_permit := false
+                    // ملكية كاملة: كل المناطق المنتظرة التي شاركت في التفعيل تُستهلك نهائياً مع هذه الصفقة
+                    string zones_txt = get_tf_name(f.tf)
+                    for j = 0 to array.size(active_fvgs) - 1
+                        if j != i
+                            FVG_Zone f2 = array.get(active_fvgs, j)
+                            if f2.is_active and not f2.requires_reset and f2.waiting_sell
+                                f2.is_used := true
+                                f2.waiting_sell := false
+                                f2.requires_reset := true
+                                zones_txt += " + " + get_tf_name(f2.tf)
+                    // تصفير التأكيد المكسور لكل المناطق الأخرى المنتظرة: لا صفقة مستقبلاً بدون ملامسة/فحص CISD جديد
+                    if array.size(active_fvgs) > 0
+                        for j = 0 to array.size(active_fvgs) - 1
+                            if j != i
+                                FVG_Zone f3 = array.get(active_fvgs, j)
+                                if f3.is_active and not f3.requires_reset and (f3.waiting_buy or f3.waiting_sell) and f3.cisd_broken
+                                    f3.cisd_broken := false
+                    active_trade_zones := zones_txt
+                    break
+
+if buy_signal and not is_in_trade
+    is_in_trade := true
+    entry_bar_index := bar_index
+    trade_type := "BUY"
+    entry_price_val := close
+    float saved_atr = useAtrForSL ? atr_val_conf : 0.0
+    sl_price := entered_setup_extreme - saved_atr
+    
+    array<float> buy_zone_levels = array.new<float>()
+    if use_fvg_engine and array.size(active_fvgs) > 0
+        for i = 0 to array.size(active_fvgs) - 1
+            FVG_Zone f = array.get(active_fvgs, i)
+            if not f.is_bull and f.is_active
+                bool zone_ok = (f.bottom - close) * pip_mult >= min_tp_points
+                bool not_same_entry_zone = na(entered_zone_top) or (f.bottom != entered_zone_top and f.bottom != entered_zone_bottom)
+                if zone_ok and not_same_entry_zone
+                    array.push(buy_zone_levels, f.bottom)
+    if array.size(buy_zone_levels) > 0
+        array.sort(buy_zone_levels, order.ascending)
+
+    array<float> buy_swing_levels = array.new<float>()
+    if array.size(recent_swing_highs2) > 0
+        for i = 0 to array.size(recent_swing_highs2) - 1
+            float sh2 = array.get(recent_swing_highs2, i)
+            if (sh2 - close) * pip_mult >= min_tp_points
+                array.push(buy_swing_levels, sh2)
+    if array.size(buy_swing_levels) > 0
+        array.sort(buy_swing_levels, order.ascending)
+
+    float liq_target_buy = (not curr_sell_dead and not na(bos_liq_sell) and (bos_liq_sell - close) * pip_mult >= min_tp_points) ? bos_liq_sell : na
+    string liq_target_buy_src = "مستوى سحب سيولة بيعي معاكس (" + get_tf_name(tf_bos_input) + ")"
+    string swing_target_buy_src = "قمة محورية (" + get_tf_name(tf_target_input) + ")"
+
+    float calculated_tp1 = close + (min_tp_points / pip_mult)
+    float calculated_tp2 = na
+    float calculated_tp3 = na
+    active_trade_tp1_src := "هدف احتياطي"
+    active_trade_tp2_src := "لا يوجد"
+    active_trade_tp3_src := "لا يوجد"
+
+    bool used_zone_buy = false
+    bool used_liq_buy = false
+    bool used_swing_buy = false
+
+    float zone_cand_buy = na
+    string zone_cand_buy_src = ""
+    if array.size(buy_zone_levels) > 0
+        for zi = 0 to array.size(buy_zone_levels) - 1
+            float z = array.get(buy_zone_levels, zi)
+            if is_far_from_selected(z, na, na, min_gap_between_targets_points)
+                zone_cand_buy := z
+                if use_fvg_engine and array.size(active_fvgs) > 0
+                    for kz = 0 to array.size(active_fvgs) - 1
+                        FVG_Zone fz = array.get(active_fvgs, kz)
+                        if not fz.is_bull and fz.is_active and fz.bottom == z
+                            zone_cand_buy_src := "منطقة FVG بيعية (" + get_tf_name(fz.tf) + ")"
+                            break
+                if zone_cand_buy_src == ""
+                    zone_cand_buy_src := "منطقة FVG بيعية"
+                break
+
+    float swing_cand_buy = na
+    if array.size(buy_swing_levels) > 0
+        for si = 0 to array.size(buy_swing_levels) - 1
+            float s = array.get(buy_swing_levels, si)
+            if is_far_from_selected(s, na, na, min_gap_between_targets_points)
+                swing_cand_buy := s
+                break
+
+    float best_buy_1 = na
+    int best_buy_1_kind = 0
+    if not na(zone_cand_buy)
+        best_buy_1 := zone_cand_buy
+        best_buy_1_kind := 1
+    if not na(liq_target_buy) and (na(best_buy_1) or liq_target_buy < best_buy_1)
+        best_buy_1 := liq_target_buy
+        best_buy_1_kind := 2
+    if not na(swing_cand_buy) and (na(best_buy_1) or swing_cand_buy < best_buy_1)
+        best_buy_1 := swing_cand_buy
+        best_buy_1_kind := 3
+    if not na(best_buy_1)
+        calculated_tp1 := best_buy_1
+        if best_buy_1_kind == 1
+            used_zone_buy := true
+            active_trade_tp1_src := zone_cand_buy_src
+        else if best_buy_1_kind == 2
+            used_liq_buy := true
+            active_trade_tp1_src := liq_target_buy_src
+        else
+            used_swing_buy := true
+            active_trade_tp1_src := swing_target_buy_src
+
+    zone_cand_buy := na
+    zone_cand_buy_src := ""
+    if array.size(buy_zone_levels) > 0
+        for zi = 0 to array.size(buy_zone_levels) - 1
+            float z = array.get(buy_zone_levels, zi)
+            if not used_zone_buy and is_far_from_selected(z, calculated_tp1, na, min_gap_between_targets_points)
+                zone_cand_buy := z
+                if use_fvg_engine and array.size(active_fvgs) > 0
+                    for kz = 0 to array.size(active_fvgs) - 1
+                        FVG_Zone fz = array.get(active_fvgs, kz)
+                        if not fz.is_bull and fz.is_active and fz.bottom == z
+                            zone_cand_buy_src := "منطقة FVG بيعية (" + get_tf_name(fz.tf) + ")"
+                            break
+                if zone_cand_buy_src == ""
+                    zone_cand_buy_src := "منطقة FVG بيعية"
+                break
+
+    swing_cand_buy := na
+    if array.size(buy_swing_levels) > 0
+        for si = 0 to array.size(buy_swing_levels) - 1
+            float s = array.get(buy_swing_levels, si)
+            if not used_swing_buy and is_far_from_selected(s, calculated_tp1, na, min_gap_between_targets_points)
+                swing_cand_buy := s
+                break
+
+    float liq_cand_buy = (not used_liq_buy and not na(liq_target_buy) and is_far_from_selected(liq_target_buy, calculated_tp1, na, min_gap_between_targets_points)) ? liq_target_buy : na
+
+    float best_buy_2 = na
+    int best_buy_2_kind = 0
+    if not na(zone_cand_buy)
+        best_buy_2 := zone_cand_buy
+        best_buy_2_kind := 1
+    if not na(liq_cand_buy) and (na(best_buy_2) or liq_cand_buy < best_buy_2)
+        best_buy_2 := liq_cand_buy
+        best_buy_2_kind := 2
+    if not na(swing_cand_buy) and (na(best_buy_2) or swing_cand_buy < best_buy_2)
+        best_buy_2 := swing_cand_buy
+        best_buy_2_kind := 3
+    if not na(best_buy_2)
+        calculated_tp2 := best_buy_2
+        if best_buy_2_kind == 1
+            used_zone_buy := true
+            active_trade_tp2_src := zone_cand_buy_src
+        else if best_buy_2_kind == 2
+            used_liq_buy := true
+            active_trade_tp2_src := liq_target_buy_src
+        else
+            used_swing_buy := true
+            active_trade_tp2_src := swing_target_buy_src
+
+    zone_cand_buy := na
+    zone_cand_buy_src := ""
+    if array.size(buy_zone_levels) > 0
+        for zi = 0 to array.size(buy_zone_levels) - 1
+            float z = array.get(buy_zone_levels, zi)
+            if not used_zone_buy and is_far_from_selected(z, calculated_tp1, calculated_tp2, min_gap_between_targets_points)
+                zone_cand_buy := z
+                if use_fvg_engine and array.size(active_fvgs) > 0
+                    for kz = 0 to array.size(active_fvgs) - 1
+                        FVG_Zone fz = array.get(active_fvgs, kz)
+                        if not fz.is_bull and fz.is_active and fz.bottom == z
+                            zone_cand_buy_src := "منطقة FVG بيعية (" + get_tf_name(fz.tf) + ")"
+                            break
+                if zone_cand_buy_src == ""
+                    zone_cand_buy_src := "منطقة FVG بيعية"
+                break
+
+    swing_cand_buy := na
+    if array.size(buy_swing_levels) > 0
+        for si = 0 to array.size(buy_swing_levels) - 1
+            float s = array.get(buy_swing_levels, si)
+            if not used_swing_buy and is_far_from_selected(s, calculated_tp1, calculated_tp2, min_gap_between_targets_points)
+                swing_cand_buy := s
+                break
+
+    liq_cand_buy := (not used_liq_buy and not na(liq_target_buy) and is_far_from_selected(liq_target_buy, calculated_tp1, calculated_tp2, min_gap_between_targets_points)) ? liq_target_buy : na
+
+    float best_buy_3 = na
+    int best_buy_3_kind = 0
+    if not na(zone_cand_buy)
+        best_buy_3 := zone_cand_buy
+        best_buy_3_kind := 1
+    if not na(liq_cand_buy) and (na(best_buy_3) or liq_cand_buy < best_buy_3)
+        best_buy_3 := liq_cand_buy
+        best_buy_3_kind := 2
+    if not na(swing_cand_buy) and (na(best_buy_3) or swing_cand_buy < best_buy_3)
+        best_buy_3 := swing_cand_buy
+        best_buy_3_kind := 3
+    if not na(best_buy_3)
+        calculated_tp3 := best_buy_3
+        if best_buy_3_kind == 1
+            active_trade_tp3_src := zone_cand_buy_src
+        else if best_buy_3_kind == 2
+            active_trade_tp3_src := liq_target_buy_src
+        else
+            active_trade_tp3_src := swing_target_buy_src
+
+    tp_price := calculated_tp1
+    tp2_price := calculated_tp2
+    tp3_price := calculated_tp3
+    trade_open_day_time := time
+    highest_milestone_reached := 0
+    last_trade_result := "NA"
+    strategy.entry("Buy", strategy.long)
+    strategy.exit("Exit Buy", "Buy", stop=sl_price, limit=tp_price)
+    current_trade_alert_active := enableBuyAlerts
+
+    if is_conf_tf and enableBuyAlerts and show_bells
+        label bell = label.new(x=bar_index, y=na, text="🔔", yloc=yloc.abovebar, color=color.yellow, style=label.style_label_down, textcolor=color.white, size=size.small)
+        if use_fvg_engine and array.size(active_fvgs) > 0
+            for j = 0 to array.size(active_fvgs) - 1
+                FVG_Zone f = array.get(active_fvgs, j)
+                if f.is_used and f.tf == active_trade_tf and f.is_bull
+                    array.push(f.bells, bell)
+
+    if enableBuyAlerts
+        stopDiff = calcPointsDiff(entry_price_val, sl_price)
+        targetDiff = calcPointsDiff(entry_price_val, tp_price)
+        msg = "🚀 صفقة شراء مفتوحة\nالزوج: " + syminfo.ticker + "\nسعر الدخول: " + format_price(entry_price_val) + "\nالاستوب: " + format_price(sl_price) + " (" + str.tostring(stopDiff) + " نقطة)"
+        if not hide_tp_alerts
+            msg := msg + "\nالهدف الأول: " + format_price(tp_price) + " (" + str.tostring(targetDiff) + " نقطة) | " + active_trade_tp1_src
+            if not na(tp2_price)
+                target2Diff = calcPointsDiff(entry_price_val, tp2_price)
+                msg := msg + "\nالهدف الثاني: " + format_price(tp2_price) + " (" + str.tostring(target2Diff) + " نقطة) | " + active_trade_tp2_src
+            if not na(tp3_price)
+                target3Diff = calcPointsDiff(entry_price_val, tp3_price)
+                msg := msg + "\nالهدف الثالث: " + format_price(tp3_price) + " (" + str.tostring(target3Diff) + " نقطة) | " + active_trade_tp3_src
+        msg := msg + "\n\nوما توفيقي إلا بالله"
+        sendWebhook(msg)
+
+if sell_signal and not is_in_trade
+    is_in_trade := true
+    entry_bar_index := bar_index
+    trade_type := "SELL"
+    entry_price_val := close
+    float saved_atr = useAtrForSL ? atr_val_conf : 0.0
+    sl_price := entered_setup_extreme + saved_atr
+    
+    array<float> sell_zone_levels = array.new<float>()
+    if use_fvg_engine and array.size(active_fvgs) > 0
+        for i = 0 to array.size(active_fvgs) - 1
+            FVG_Zone f = array.get(active_fvgs, i)
+            if f.is_bull and f.is_active
+                bool zone_ok = (close - f.top) * pip_mult >= min_tp_points
+                bool not_same_entry_zone = na(entered_zone_top) or (f.top != entered_zone_top and f.top != entered_zone_bottom)
+                if zone_ok and not_same_entry_zone
+                    array.push(sell_zone_levels, f.top)
+    if array.size(sell_zone_levels) > 0
+        array.sort(sell_zone_levels, order.descending)
+
+    array<float> sell_swing_levels = array.new<float>()
+    if array.size(recent_swing_lows2) > 0
+        for i = 0 to array.size(recent_swing_lows2) - 1
+            float sl2 = array.get(recent_swing_lows2, i)
+            if (close - sl2) * pip_mult >= min_tp_points
+                array.push(sell_swing_levels, sl2)
+    if array.size(sell_swing_levels) > 0
+        array.sort(sell_swing_levels, order.descending)
+
+    float liq_target_sell = (not curr_buy_dead and not na(bos_liq_buy) and (close - bos_liq_buy) * pip_mult >= min_tp_points) ? bos_liq_buy : na
+    string liq_target_sell_src = "مستوى سحب سيولة شرائي معاكس (" + get_tf_name(tf_bos_input) + ")"
+    string swing_target_sell_src = "قاع محوري (" + get_tf_name(tf_target_input) + ")"
+
+    float calculated_tp1_sell = close - (min_tp_points / pip_mult)
+    float calculated_tp2_sell = na
+    float calculated_tp3_sell = na
+    active_trade_tp1_src := "هدف احتياطي"
+    active_trade_tp2_src := "لا يوجد"
+    active_trade_tp3_src := "لا يوجد"
+
+    bool used_zone_sell = false
+    bool used_liq_sell = false
+    bool used_swing_sell = false
+
+    float zone_cand_sell = na
+    string zone_cand_sell_src = ""
+    if array.size(sell_zone_levels) > 0
+        for zi = 0 to array.size(sell_zone_levels) - 1
+            float z = array.get(sell_zone_levels, zi)
+            if is_far_from_selected(z, na, na, min_gap_between_targets_points)
+                zone_cand_sell := z
+                if use_fvg_engine and array.size(active_fvgs) > 0
+                    for kz = 0 to array.size(active_fvgs) - 1
+                        FVG_Zone fz = array.get(active_fvgs, kz)
+                        if fz.is_bull and fz.is_active and fz.top == z
+                            zone_cand_sell_src := "منطقة FVG شرائية (" + get_tf_name(fz.tf) + ")"
+                            break
+                if zone_cand_sell_src == ""
+                    zone_cand_sell_src := "منطقة FVG شرائية"
+                break
+
+    float swing_cand_sell = na
+    if array.size(sell_swing_levels) > 0
+        for si = 0 to array.size(sell_swing_levels) - 1
+            float s = array.get(sell_swing_levels, si)
+            if is_far_from_selected(s, na, na, min_gap_between_targets_points)
+                swing_cand_sell := s
+                break
+
+    float best_sell_1 = na
+    int best_sell_1_kind = 0
+    if not na(zone_cand_sell)
+        best_sell_1 := zone_cand_sell
+        best_sell_1_kind := 1
+    if not na(liq_target_sell) and (na(best_sell_1) or liq_target_sell > best_sell_1)
+        best_sell_1 := liq_target_sell
+        best_sell_1_kind := 2
+    if not na(swing_cand_sell) and (na(best_sell_1) or swing_cand_sell > best_sell_1)
+        best_sell_1 := swing_cand_sell
+        best_sell_1_kind := 3
+    if not na(best_sell_1)
+        calculated_tp1_sell := best_sell_1
+        if best_sell_1_kind == 1
+            used_zone_sell := true
+            active_trade_tp1_src := zone_cand_sell_src
+        else if best_sell_1_kind == 2
+            used_liq_sell := true
+            active_trade_tp1_src := liq_target_sell_src
+        else
+            used_swing_sell := true
+            active_trade_tp1_src := swing_target_sell_src
+
+    zone_cand_sell := na
+    zone_cand_sell_src := ""
+    if array.size(sell_zone_levels) > 0
+        for zi = 0 to array.size(sell_zone_levels) - 1
+            float z = array.get(sell_zone_levels, zi)
+            if not used_zone_sell and is_far_from_selected(z, calculated_tp1_sell, na, min_gap_between_targets_points)
+                zone_cand_sell := z
+                if use_fvg_engine and array.size(active_fvgs) > 0
+                    for kz = 0 to array.size(active_fvgs) - 1
+                        FVG_Zone fz = array.get(active_fvgs, kz)
+                        if fz.is_bull and fz.is_active and fz.top == z
+                            zone_cand_sell_src := "منطقة FVG شرائية (" + get_tf_name(fz.tf) + ")"
+                            break
+                if zone_cand_sell_src == ""
+                    zone_cand_sell_src := "منطقة FVG شرائية"
+                break
+
+    swing_cand_sell := na
+    if array.size(sell_swing_levels) > 0
+        for si = 0 to array.size(sell_swing_levels) - 1
+            float s = array.get(sell_swing_levels, si)
+            if not used_swing_sell and is_far_from_selected(s, calculated_tp1_sell, na, min_gap_between_targets_points)
+                swing_cand_sell := s
+                break
+
+    float liq_cand_sell = (not used_liq_sell and not na(liq_target_sell) and is_far_from_selected(liq_target_sell, calculated_tp1_sell, na, min_gap_between_targets_points)) ? liq_target_sell : na
+
+    float best_sell_2 = na
+    int best_sell_2_kind = 0
+    if not na(zone_cand_sell)
+        best_sell_2 := zone_cand_sell
+        best_sell_2_kind := 1
+    if not na(liq_cand_sell) and (na(best_sell_2) or liq_cand_sell > best_sell_2)
+        best_sell_2 := liq_cand_sell
+        best_sell_2_kind := 2
+    if not na(swing_cand_sell) and (na(best_sell_2) or swing_cand_sell > best_sell_2)
+        best_sell_2 := swing_cand_sell
+        best_sell_2_kind := 3
+    if not na(best_sell_2)
+        calculated_tp2_sell := best_sell_2
+        if best_sell_2_kind == 1
+            used_zone_sell := true
+            active_trade_tp2_src := zone_cand_sell_src
+        else if best_sell_2_kind == 2
+            used_liq_sell := true
+            active_trade_tp2_src := liq_target_sell_src
+        else
+            used_swing_sell := true
+            active_trade_tp2_src := swing_target_sell_src
+
+    zone_cand_sell := na
+    zone_cand_sell_src := ""
+    if array.size(sell_zone_levels) > 0
+        for zi = 0 to array.size(sell_zone_levels) - 1
+            float z = array.get(sell_zone_levels, zi)
+            if not used_zone_sell and is_far_from_selected(z, calculated_tp1_sell, calculated_tp2_sell, min_gap_between_targets_points)
+                zone_cand_sell := z
+                if use_fvg_engine and array.size(active_fvgs) > 0
+                    for kz = 0 to array.size(active_fvgs) - 1
+                        FVG_Zone fz = array.get(active_fvgs, kz)
+                        if fz.is_bull and fz.is_active and fz.top == z
+                            zone_cand_sell_src := "منطقة FVG شرائية (" + get_tf_name(fz.tf) + ")"
+                            break
+                if zone_cand_sell_src == ""
+                    zone_cand_sell_src := "منطقة FVG شرائية"
+                break
+
+    swing_cand_sell := na
+    if array.size(sell_swing_levels) > 0
+        for si = 0 to array.size(sell_swing_levels) - 1
+            float s = array.get(sell_swing_levels, si)
+            if not used_swing_sell and is_far_from_selected(s, calculated_tp1_sell, calculated_tp2_sell, min_gap_between_targets_points)
+                swing_cand_sell := s
+                break
+
+    liq_cand_sell := (not used_liq_sell and not na(liq_target_sell) and is_far_from_selected(liq_target_sell, calculated_tp1_sell, calculated_tp2_sell, min_gap_between_targets_points)) ? liq_target_sell : na
+
+    float best_sell_3 = na
+    int best_sell_3_kind = 0
+    if not na(zone_cand_sell)
+        best_sell_3 := zone_cand_sell
+        best_sell_3_kind := 1
+    if not na(liq_cand_sell) and (na(best_sell_3) or liq_cand_sell > best_sell_3)
+        best_sell_3 := liq_cand_sell
+        best_sell_3_kind := 2
+    if not na(swing_cand_sell) and (na(best_sell_3) or swing_cand_sell > best_sell_3)
+        best_sell_3 := swing_cand_sell
+        best_sell_3_kind := 3
+    if not na(best_sell_3)
+        calculated_tp3_sell := best_sell_3
+        if best_sell_3_kind == 1
+            active_trade_tp3_src := zone_cand_sell_src
+        else if best_sell_3_kind == 2
+            active_trade_tp3_src := liq_target_sell_src
+        else
+            active_trade_tp3_src := swing_target_sell_src
+
+    tp_price := calculated_tp1_sell
+    tp2_price := calculated_tp2_sell
+    tp3_price := calculated_tp3_sell
+    
+    trade_open_day_time := time
+    highest_milestone_reached := 0
+    last_trade_result := "NA"
+    strategy.entry("Sell", strategy.short)
+    strategy.exit("Exit Sell", "Sell", stop=sl_price, limit=tp_price)
+    current_trade_alert_active := enableSellAlerts
+
+    if is_conf_tf and enableSellAlerts and show_bells
+        label bell = label.new(x=bar_index, y=na, text="🔔", yloc=yloc.abovebar, color=color.yellow, style=label.style_label_down, textcolor=color.white, size=size.small)
+        if use_fvg_engine and array.size(active_fvgs) > 0
+            for j = 0 to array.size(active_fvgs) - 1
+                FVG_Zone f = array.get(active_fvgs, j)
+                if f.is_used and f.tf == active_trade_tf and not f.is_bull
+                    array.push(f.bells, bell)
+
+    if enableSellAlerts
+        stopDiff = calcPointsDiff(entry_price_val, sl_price)
+        targetDiff = calcPointsDiff(entry_price_val, tp_price)
+        msg = "⚡ صفقة بيع مفتوحة\nالزوج: " + syminfo.ticker + "\nسعر الدخول: " + format_price(entry_price_val) + "\nالاستوب: " + format_price(sl_price) + " (" + str.tostring(stopDiff) + " نقطة)"
+        if not hide_tp_alerts
+            msg := msg + "\nالهدف الأول: " + format_price(tp_price) + " (" + str.tostring(targetDiff) + " نقطة) | " + active_trade_tp1_src
+            if not na(tp2_price)
+                target2Diff = calcPointsDiff(entry_price_val, tp2_price)
+                msg := msg + "\nالهدف الثاني: " + format_price(tp2_price) + " (" + str.tostring(target2Diff) + " نقطة) | " + active_trade_tp2_src
+            if not na(tp3_price)
+                target3Diff = calcPointsDiff(entry_price_val, tp3_price)
+                msg := msg + "\nالهدف الثالث: " + format_price(tp3_price) + " (" + str.tostring(target3Diff) + " نقطة) | " + active_trade_tp3_src
+        msg := msg + "\n\nوما توفيقي إلا بالله"
+        sendWebhook(msg)
+
+f_inject_bell_to_active_zone(label b_lbl) =>
+    if use_fvg_engine and array.size(active_fvgs) > 0
+        for j = 0 to array.size(active_fvgs) - 1
+            FVG_Zone z = array.get(active_fvgs, j)
+            if z.is_used and z.tf == active_trade_tf and z.is_bull == (trade_type == "BUY")
+                array.push(z.bells, b_lbl)
+
+if is_in_trade
+    bool is_entry_bar = bar_index == entry_bar_index
+    bool time_to_close = (dayofmonth(time, my_timezone) != dayofmonth(trade_open_day_time, my_timezone))or (month(time, my_timezone) != month(trade_open_day_time, my_timezone)) or (year(time, my_timezone) != year(trade_open_day_time, my_timezone))
+    if time_to_close
+        is_in_trade := false
+        trade_type := na
+        tp2_price := na
+        tp3_price := na
+        strategy.close_all(comment="New Day Close")
+    else if not is_entry_bar
+        if trade_type == "BUY"
+            if use_milestone_alerts
+                int current_max_pts = math.round((high - entry_price_val) * pip_mult)
+                int current_milestone = math.floor(current_max_pts / milestone_step_points) * milestone_step_points
+                if current_milestone >= milestone_step_points and current_milestone > highest_milestone_reached
+                    int tp_dist = math.round((tp_price - entry_price_val) * pip_mult)
+                    if current_milestone < tp_dist
+                        highest_milestone_reached := current_milestone
+                        if current_trade_alert_active
+                            msg = "✅ تم تحقيق ربح للان " + str.tostring(current_milestone) + "+ نقطه"
+                            sendWebhook(msg)
+                            if is_conf_tf and show_bells
+                                label bell = label.new(x=bar_index, y=na, text="🔔", yloc=yloc.abovebar, color=color.yellow, style=label.style_label_down, textcolor=color.white, size=size.small)
+                                f_inject_bell_to_active_zone(bell)
+
+            if high >= tp_price
+                if enableBuyAlerts and current_trade_alert_active and not hide_tp_alerts
+                    pointsDiff = calcPointsDiff(entry_price_val, tp_price)
+                    msg = "💎 إغـلاق رابـح\nتم الوصول للهدف الأول بدقة ولله الحمد.\nالحصيلة: +" + str.tostring(pointsDiff) + " نقطة ✅"
+                    sendWebhook(msg)
+                    if is_conf_tf and show_bells
+                        label bell = label.new(x=bar_index, y=na, text="🔔", yloc=yloc.abovebar, color=color.yellow, style=label.style_label_down, textcolor=color.white, size=size.small)
+                        f_inject_bell_to_active_zone(bell)
+                is_in_trade := false
+                trade_type := na
+                tp2_price := na
+                tp3_price := na
+                last_trade_result := "TP"
+
+            else if low <= sl_price
+                if enableBuyAlerts and current_trade_alert_active and not hide_sl_alerts
+                    pointsDiff = calcPointsDiff(entry_price_val, sl_price)
+                    msg = "🛑 إيقـاف الخسـارة\nتم تنفيذ أمر الإغلاق التزاماً بإدارة المخاطر.\nالحصيلة: -" + str.tostring(pointsDiff) + " نقطة ✖️"
+                    sendWebhook(msg)
+                    if is_conf_tf and show_bells
+                        label bell = label.new(x=bar_index, y=na, text="🔔", yloc=yloc.abovebar, color=color.yellow, style=label.style_label_down, textcolor=color.white, size=size.small)
+                        f_inject_bell_to_active_zone(bell)
+                is_in_trade := false
+                trade_type := na
+                tp2_price := na
+                tp3_price := na
+                last_trade_result := "SL"
+
+        else if trade_type == "SELL"
+            if use_milestone_alerts
+                int current_max_pts = math.round((entry_price_val - low) * pip_mult)
+                int current_milestone = math.floor(current_max_pts / milestone_step_points) * milestone_step_points
+                if current_milestone >= milestone_step_points and current_milestone > highest_milestone_reached
+                    int tp_dist = math.round((entry_price_val - tp_price) * pip_mult)
+                    if current_milestone < tp_dist
+                        highest_milestone_reached := current_milestone
+                        if current_trade_alert_active
+                            msg = "✅ تم تحقيق ربح للان " + str.tostring(current_milestone) + "+ نقطه"
+                            sendWebhook(msg)
+                            if is_conf_tf and show_bells
+                                label bell = label.new(x=bar_index, y=na, text="🔔", yloc=yloc.abovebar, color=color.yellow, style=label.style_label_down, textcolor=color.white, size=size.small)
+                                f_inject_bell_to_active_zone(bell)
+
+            if low <= tp_price
+                if enableSellAlerts and current_trade_alert_active and not hide_tp_alerts
+                    pointsDiff = calcPointsDiff(entry_price_val, tp_price)
+                    msg = "💎 إغـلاق رابـح\nتم الوصول للهدف الأول بدقة ولله الحمد.\nالحصيلة: +" + str.tostring(pointsDiff) + " نقطة ✅"
+                    sendWebhook(msg)
+                    if is_conf_tf and show_bells
+                        label bell = label.new(x=bar_index, y=na, text="🔔", yloc=yloc.abovebar, color=color.yellow, style=label.style_label_down, textcolor=color.white, size=size.small)
+                        f_inject_bell_to_active_zone(bell)
+                is_in_trade := false
+                trade_type := na
+                tp2_price := na
+                tp3_price := na
+                last_trade_result := "TP"
+
+            else if high >= sl_price
+                if enableSellAlerts and current_trade_alert_active and not hide_sl_alerts
+                    pointsDiff = calcPointsDiff(entry_price_val, sl_price)
+                    msg = "🛑 إيقـاف الخسـارة\nتم تنفيذ أمر الإغلاق التزاماً بإدارة المخاطر.\nالحصيلة: -" + str.tostring(pointsDiff) + " نقطة ✖️"
+                    sendWebhook(msg)
+                    if is_conf_tf and show_bells
+                        label bell = label.new(x=bar_index, y=na, text="🔔", yloc=yloc.abovebar, color=color.yellow, style=label.style_label_down, textcolor=color.white, size=size.small)
+                        f_inject_bell_to_active_zone(bell)
+                is_in_trade := false
+                trade_type := na
+                tp2_price := na
+                tp3_price := na
+                last_trade_result := "SL"
+
+// ==========================================
+// 10. الرسومات وحقن المعلومات في الـ Tooltip
+// ==========================================
+
+if is_conf_tf and buy_signal
+    string tp1_line = "\nالهدف الأول: " + format_price(tp_price) + " | " + active_trade_tp1_src
+    string tp2_line = na(tp2_price) ? "\nالهدف الثاني: لا يوجد" : "\nالهدف الثاني: " + format_price(tp2_price) + " | " + active_trade_tp2_src
+    string tp3_line = na(tp3_price) ? "\nالهدف الثالث: لا يوجد" : "\nالهدف الثالث: " + format_price(tp3_price) + " | " + active_trade_tp3_src
+    string t_msg = "استراتيجية البروفيسور 🚀\nالمنطقة: " + active_trade_src + " شرائية (" + active_trade_zones + ")\nالملامسة: رقم " + str.tostring(active_trade_touch_no) + (active_trade_touch_no > 1 ? (active_trade_crt_revive ? " (مع سحب CRT)" : " (بدون سحب CRT)") : "") + "\nقمة/قاع السيولة (BOS): " + (not na(active_trade_liq) ? format_price(active_trade_liq) : "لا يوجد") + tp1_line + tp2_line + tp3_line
+    label.new(x=bar_index, y=na, text="BUY\n" + custom_chart_name, yloc=yloc.belowbar, color=color.green, style=label.style_label_up, textcolor=color.white, size=size.small, tooltip=t_msg)
+
+if is_conf_tf and sell_signal
+    string tp1_line = "\nالهدف الأول: " + format_price(tp_price) + " | " + active_trade_tp1_src
+    string tp2_line = na(tp2_price) ? "\nالهدف الثاني: لا يوجد" : "\nالهدف الثاني: " + format_price(tp2_price) + " | " + active_trade_tp2_src
+    string tp3_line = na(tp3_price) ? "\nالهدف الثالث: لا يوجد" : "\nالهدف الثالث: " + format_price(tp3_price) + " | " + active_trade_tp3_src
+    string t_msg = "استراتيجية البروفيسور ⚡\nالمنطقة: " + active_trade_src + " بيعية (" + active_trade_zones + ")\nالملامسة: رقم " + str.tostring(active_trade_touch_no) + (active_trade_touch_no > 1 ? (active_trade_crt_revive ? " (مع سحب CRT)" : " (بدون سحب CRT)") : "") + "\nقمة/قاع السيولة (BOS): " + (not na(active_trade_liq) ? format_price(active_trade_liq) : "لا يوجد") + tp1_line + tp2_line + tp3_line
+    label.new(x=bar_index, y=na, text="SELL\n" + custom_chart_name, yloc=yloc.abovebar, color=color.red, style=label.style_label_down, textcolor=color.white, size=size.small, tooltip=t_msg)
+
+plot(is_in_trade and is_conf_tf ? sl_price : na, title="SL", color=color.red, style=plot.style_linebr, linewidth=2)
+plot(is_in_trade and is_conf_tf ? tp_price : na, title="TP1", color=color.green, style=plot.style_linebr, linewidth=2)
+plot(is_in_trade and is_conf_tf ? tp2_price : na, title="TP2", color=color.green, style=plot.style_linebr, linewidth=2)
+plot(is_in_trade and is_conf_tf ? tp3_price : na, title="TP3", color=color.green, style=plot.style_linebr, linewidth=2)
+
+plot(show_bias_lines ? d1_h : na, title="Closed Day High", color=color.new(#8b0000, 40), style=plot.style_linebr, linewidth=1)
+plot(show_bias_lines ? d1_l : na, title="Closed Day Low", color=color.new(#00008b, 40), style=plot.style_linebr, linewidth=1)
+plot(show_bias_lines ? d1_mid : na, title="Closed Day 50%", color=color.new(#808000, 40), style=plot.style_linebr, linewidth=1)
+
+// ==========================================
+// الداشبورد الناطق المحدث المنسق بالكامل
+// ==========================================
+
+int y_time = year(time)
+int m_time = month(time)
+int d_time = dayofmonth(time)
+int march_1st_dow = dayofweek(timestamp(y_time, 3, 1, 0, 0, 0))
+int march_2nd_sun = 1 + (8 - march_1st_dow) % 7 + 7
+int nov_1st_dow = dayofweek(timestamp(y_time, 11, 1, 0, 0, 0))
+int nov_1st_sun = 1 + (8 - nov_1st_dow) % 7
+
+bool is_dst_now = (m_time > 3 and m_time < 11) or (m_time == 3 and d_time >= march_2nd_sun) or (m_time == 11 and d_time < nov_1st_sun)
+string current_time_mode = is_dst_now ? "توقيت صيفي" : "توقيت شتوي"
+
+var pos = dash_pos_input == "يمين أعلى" ? position.top_right : dash_pos_input == "يسار أعلى" ? position.top_left : dash_pos_input == "يمين أسفل" ? position.bottom_right : position.bottom_left
+var table dash = table.new(pos, 2, 7, border_width=1, border_color=color.new(color.gray, 60), frame_color=color.new(color.gray, 60), frame_width=1)
+
+// تقسيم نص طويل إلى أسطر متساوية للعرض في الداشبورد (لأن خلايا الجدول لا تلتف تلقائياً)
+f_wrap_line(string txt, int seg, int max_chars) =>
+    string result = ""
+    if not na(txt) and str.length(txt) > seg * max_chars
+        int start = seg * max_chars
+        result := str.substring(txt, start, math.min(start + max_chars, str.length(txt)))
+    result
+
+if show_dash and is_conf_tf
+    string dash_status = "🔭 جاري البحث"
+    string dash_reason = "نظام الكبسولات المستقلة يحمي البيانات"
+    
+    bool any_waiting_buy = false
+    bool any_waiting_sell = false
+    bool found_active = false
+    bool is_banned_dash = false
+    bool is_used_dash = false
+    bool any_ifvg_dash = false
+    int total_zones = 0
+    int waiting_cisd_buy = 0
+    int waiting_cisd_sell = 0
+
+    if use_fvg_engine and array.size(active_fvgs) > 0
+        for j = 0 to array.size(active_fvgs) - 1
+            FVG_Zone f = array.get(active_fvgs, j)
+            if f.is_active
+                found_active := true
+                total_zones += 1
+                if f.is_banned
+                    is_banned_dash := true
+                if f.is_used
+                    is_used_dash := true
+                if f.is_ifvg
+                    any_ifvg_dash := true
+                if f.waiting_buy
+                    any_waiting_buy := true
+                    if not f.cisd_broken
+                        waiting_cisd_buy += 1
+                if f.waiting_sell
+                    any_waiting_sell := true
+                    if not f.cisd_broken
+                        waiting_cisd_sell += 1
+
+
+    if not use_fvg_engine
+        dash_status := "⚙️ محرك الفجوات مطفي"
+        dash_reason := "لا يوجد بحث عن مناطق — فعّل محرك FVG من الإعدادات."
+    else if is_in_trade
+        dash_status := trade_type == "BUY" ? "🟢 صفقة شراء مفتوحة" : "🔴 صفقة بيع مفتوحة"
+        string tp2_txt = na(tp2_price) ? "لا يوجد" : format_price(tp2_price)
+        string tp3_txt = na(tp3_price) ? "لا يوجد" : format_price(tp3_price)
+        dash_reason := "إدارة حية: الهدف1 " + format_price(tp_price) + " (" + active_trade_tp1_src + ") | الهدف2 " + tp2_txt + " (" + active_trade_tp2_src + ") | الهدف3 " + tp3_txt + " (" + active_trade_tp3_src + ") | الوقف " + format_price(sl_price)
+    else if is_banned_dash
+        dash_status := "🚫 كسر منطقة (إبطال)"
+        dash_reason := "أغلقت شمعة فريم الحظر (" + get_tf_name(tf_cancel_input) + ") خلف حدود منطقة فأُبطلت ومُسحت. المناطق السليمة تتابع العمل."
+    else if last_trade_result == "TP"
+        dash_status := "✅ صفقة رابحة (هدف)"
+        dash_reason := "بلغ السعر الهدف الأول فأُغلقت الصفقة ربحاً. مناطق الصفقة مستهلكة — البحث عن إعداد جديد جارٍ الآن."
+    else if last_trade_result == "SL"
+        dash_status := "🛑 صفقة خاسرة (وقف)"
+        dash_reason := "بلغ السعر الوقف فأُغلقت الصفقة خسارة. مناطق الصفقة مستهلكة — بانتظار إعداد جديد."
+    else if is_used_dash and use_one_trade_per_fvg
+        dash_status := "🔒 مناطق مستهلكة"
+        dash_reason := "مناطق أخذت صفقاتها ومقفلة (صفقة واحدة لكل منطقة). تُمسح عند كسرها أو تنقلب IFVG."
+    else if any_waiting_buy
+        dash_status := "⏳ ملامسة شرائية — " + (use_cisd_filter ? "بانتظار كسر CISD" : "الدخول فوري (CISD مطفي)")
+        dash_reason := use_cisd_filter ? "ملامسة مسجلة لـ " + str.tostring(waiting_cisd_buy) + " منطقة شرائية: يُراقب إغلاق شمعة فوق مستوى CISD (الحمراء المرجعية ثم الخضراء قبلها)." : "CISD مطفي: أول إغلاق بعد الملامسة يطلق الشراء مباشرة."
+    else if any_waiting_sell
+        dash_status := "⏳ ملامسة بيعية — " + (use_cisd_filter ? "بانتظار كسر CISD" : "الدخول فوري (CISD مطفي)")
+        dash_reason := use_cisd_filter ? "ملامسة مسجلة لـ " + str.tostring(waiting_cisd_sell) + " منطقة بيعية: يُراقب إغلاق شمعة تحت مستوى CISD (الخضراء المرجعية ثم الحمراء قبلها)." : "CISD مطفي: أول إغلاق بعد الملامسة يطلق البيع مباشرة."
+    else if found_active
+        string zones_cnt = total_zones > 0 ? " (" + str.tostring(total_zones) + " مناطق نشطة" + (any_ifvg_dash ? "، منها معكوسة IFVG" : "") + ")" : ""
+        if use_bos_filter and not sweep_buy_ready and not sweep_sell_ready
+            dash_status := "👀 مناطق مراقبة" + zones_cnt
+            dash_reason := "المناطق جاهزة لكن الملامسة معطلة: بانتظار سحب سيولة بعد BOS على فريم " + get_tf_name(tf_bos_input) + " (كسر قمة/قاع البنية ثم سحبها)."
+        else
+            dash_status := "👀 مناطق مراقبة" + zones_cnt
+            dash_reason := "مناطق مرسومة تنتظر وصول السعر إليها لأول ملامسة معتمدة."
+
+    table.clear(dash, 0, 0, 1, 6)
+    table.cell(dash, 1, 0, "معلومات النظام", text_color=color.white, bgcolor=color.new(#1e222d, 10), text_size=size.tiny)
+    table.cell(dash, 0, 0, custom_chart_name, text_color=color.white, bgcolor=color.new(#2a2e39, 10), text_size=size.tiny)
+    table.cell(dash, 1, 1, "حالة الاستراتيجية", text_color=color.white, bgcolor=color.new(#1e222d, 10), text_size=size.tiny)
+    table.cell(dash, 0, 1, dash_status, text_color=color.white, bgcolor=color.new(#2a2e39, 10), text_size=size.tiny)
+    table.cell(dash, 1, 2, "الانحياز اليومي", text_color=color.white, bgcolor=color.new(#1e222d, 10), text_size=size.tiny)
+    table.cell(dash, 0, 2, daily_bias_status, text_color=color.white, bgcolor=color.new(#2a2e39, 10), text_size=size.tiny)
+    table.cell(dash, 1, 3, "التفاصيل / السبب", text_color=color.white, bgcolor=color.new(#1e222d, 10), text_size=size.tiny)
+    string reason_l1 = f_wrap_line(dash_reason, 0, 40)
+    string reason_l2 = f_wrap_line(dash_reason, 1, 40)
+    string reason_l3 = f_wrap_line(dash_reason, 2, 40)
+    if reason_l1 != ""
+        table.cell(dash, 0, 3, reason_l1, text_color=color.white, bgcolor=color.new(#2a2e39, 10), text_size=size.tiny)
+    if reason_l2 != ""
+        table.cell(dash, 0, 4, reason_l2, text_color=color.white, bgcolor=color.new(#2a2e39, 10), text_size=size.tiny)
+    if reason_l3 != ""
+        table.cell(dash, 0, 5, reason_l3, text_color=color.white, bgcolor=color.new(#2a2e39, 10), text_size=size.tiny)
+    table.cell(dash, 1, 6, "نوع التوقيت الحالي", text_color=color.white, bgcolor=color.new(#1e222d, 10), text_size=size.tiny)
+    table.cell(dash, 0, 6, current_time_mode, text_color=color.white, bgcolor=color.new(#2a2e39, 10), text_size=size.tiny)
+
+// ==========================================
+// 11. نافذة سجل التنبيهات (Alert Panel) 📋
+// ==========================================
+
+var table alert_panel = na
+if show_alert_panel and is_conf_tf
+    int log_size = array.size(alert_log)
+    string header_text = "Alert Log (" + str.tostring(log_size) + ")"
+    string log_1 = log_size >= 1 ? array.get(alert_log, log_size - 1) : ""
+    string log_2 = log_size >= 2 ? array.get(alert_log, log_size - 2) : ""
+    if na(alert_panel)
+        alert_panel := table.new(position.top_right, 1, 3, border_width=1, border_color=color.new(color.gray, 60), frame_color=color.new(color.gray, 60), frame_width=1)
+    table.cell(alert_panel, 0, 0, header_text, text_color=color.white, bgcolor=color.new(#1e222d, 10), text_size=size.small)
+    table.cell(alert_panel, 0, 1, "1) " + log_1, text_color=color.white, bgcolor=color.new(#2a2e39, 10), text_size=size.small)
+    table.cell(alert_panel, 0, 2, "2) " + log_2, text_color=color.white, bgcolor=color.new(#2a2e39, 10), text_size=size.small)
